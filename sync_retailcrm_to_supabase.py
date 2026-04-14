@@ -11,6 +11,10 @@ ENV_PATH = Path(".env")
 RETAILCRM_ORDERS_PATH = "/api/v5/orders"
 PER_PAGE = 100
 
+# Уведомления о крупных заказах (сумма из CRM — totalSumm)
+LARGE_ORDER_THRESHOLD = 50_000
+TELEGRAM_NOTIFIED_IDS_PATH = Path("telegram_notified_order_ids.json")
+
 
 def load_env(env_path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -86,6 +90,102 @@ def fetch_all_orders(base_url: str, api_key: str) -> list[dict[str, Any]]:
     return all_orders
 
 
+def order_customer_name(order: dict[str, Any]) -> str:
+    first = str(order.get("firstName", "")).strip()
+    last = str(order.get("lastName", "")).strip()
+    name = f"{first} {last}".strip()
+    return name or "Неизвестный покупатель"
+
+
+def load_notified_order_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if isinstance(raw, list):
+        return {str(x) for x in raw}
+    if isinstance(raw, dict) and "ids" in raw and isinstance(raw["ids"], list):
+        return {str(x) for x in raw["ids"]}
+    return set()
+
+
+def save_notified_order_ids(path: Path, ids: set[str]) -> None:
+    sorted_ids = sorted(ids, key=lambda x: (not x.isdigit(), int(x) if x.isdigit() else x))
+    path.write_text(
+        json.dumps({"ids": sorted_ids}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def send_telegram_message(
+    session: requests.Session,
+    bot_token: str,
+    chat_id: str,
+    text: str,
+) -> None:
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    response = session.post(
+        url,
+        json={"chat_id": chat_id, "text": text},
+        timeout=20,
+    )
+    response.raise_for_status()
+
+
+def notify_large_orders_telegram(
+    session: requests.Session,
+    orders: list[dict[str, Any]],
+    state_path: Path,
+) -> None:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        print(
+            "Telegram: пропуск уведомлений (не заданы TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID).",
+        )
+        return
+
+    notified = load_notified_order_ids(state_path)
+    sent = 0
+
+    for order in orders:
+        total_raw = order.get("totalSumm")
+        try:
+            total = float(total_raw) if total_raw is not None else 0.0
+        except (TypeError, ValueError):
+            total = 0.0
+
+        if total <= LARGE_ORDER_THRESHOLD:
+            continue
+
+        crm_id = order.get("id")
+        if crm_id is None:
+            continue
+        order_key = str(crm_id)
+        if order_key in notified:
+            continue
+
+        name = order_customer_name(order)
+        amount_display = int(round(total))
+        text = (
+            f"Новый крупный заказ! Сумма: {amount_display} ₸, Клиент: {name}"
+        )
+
+        try:
+            send_telegram_message(session, bot_token, chat_id, text)
+            notified.add(order_key)
+            save_notified_order_ids(state_path, notified)
+            sent += 1
+            print(f"Telegram: уведомление отправлено по заказу id={order_key}")
+        except requests.RequestException as exc:
+            print(f"Telegram: ошибка отправки для заказа id={order_key}: {exc}")
+
+    if sent:
+        print(f"Telegram: отправлено уведомлений: {sent}")
+
+
 def map_order_for_upsert(order: dict[str, Any]) -> dict[str, Any]:
     external_id = order.get("externalId")
     if not external_id:
@@ -94,10 +194,7 @@ def map_order_for_upsert(order: dict[str, Any]) -> dict[str, Any]:
     if not external_id:
         raise ValueError("Order does not have 'externalId' or 'id'")
 
-    # Склеиваем имя и фамилию в одно поле customer_name
-    first_name = order.get("firstName", "")
-    last_name = order.get("lastName", "")
-    customer_name = f"{first_name} {last_name}".strip() or "Неизвестный покупатель"
+    customer_name = order_customer_name(order)
 
     return {
         "external_id": str(external_id),
@@ -145,6 +242,12 @@ def main() -> None:
     orders = fetch_all_orders(retailcrm_url, retailcrm_api_key)
     print(f"RetailCRM: total fetched orders = {len(orders)}")
     upsert_orders(supabase, orders)
+
+    state_file = Path(os.getenv("TELEGRAM_STATE_PATH", "").strip() or TELEGRAM_NOTIFIED_IDS_PATH)
+
+    with requests.Session() as tg_session:
+        notify_large_orders_telegram(tg_session, orders, state_file)
+
     print("Sync completed.")
 
 
