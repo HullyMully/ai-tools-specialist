@@ -20,33 +20,43 @@ const supabase =
 function App() {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
 
-  useEffect(() => {
-    async function loadOrders() {
-      if (!supabase) {
-        setError(
-          'Не заданы SUPABASE URL/KEY. Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_KEY в .env.',
-        )
-        setLoading(false)
-        return
-      }
-
-      const { data, error: fetchError } = await supabase
-        .from('orders')
-        .select('*')
-
-      if (fetchError) {
-        setError(fetchError.message)
-        setLoading(false)
-        return
-      }
-
-      setOrders(data ?? [])
+  async function loadOrders(isRefresh = false) {
+    if (!supabase) {
+      setError(
+        'Не заданы SUPABASE URL/KEY. Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_KEY в .env.',
+      )
       setLoading(false)
+      setRefreshing(false)
+      return
     }
 
+    if (isRefresh) {
+      setRefreshing(true)
+    } else {
+      setLoading(true)
+    }
+    setError('')
+
+    const { data, error: fetchError } = await supabase.from('orders').select('*')
+
+    if (fetchError) {
+      setError(fetchError.message)
+    } else {
+      setOrders(data ?? [])
+    }
+
+    setLoading(false)
+    if (isRefresh) {
+      setRefreshing(false)
+    }
+  }
+
+  useEffect(() => {
     loadOrders()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const totalRevenue = useMemo(
@@ -74,6 +84,24 @@ function App() {
     }))
   }, [orders])
 
+  const tableRows = useMemo(
+    () =>
+      orders.map((order) => {
+        const firstName = (order.first_name || order.firstName || '').trim()
+        const lastName = (order.last_name || order.lastName || '').trim()
+        const customerName =
+          order.customer_name ||
+          `${firstName} ${lastName}`.trim() ||
+          'Неизвестный покупатель'
+        return {
+          id: order.id || order.external_id || '-',
+          customerName,
+          total: Number(order.total_sum ?? order.total_summ ?? 0),
+        }
+      }),
+    [orders],
+  )
+
   const formatMoney = (amount) =>
     new Intl.NumberFormat('ru-RU', {
       style: 'currency',
@@ -83,7 +111,17 @@ function App() {
 
   return (
     <main className="dashboard">
-      <h1>Дашборд заказов</h1>
+      <div className="dashboard-header">
+        <h1>Дашборд заказов</h1>
+        <button
+          type="button"
+          className="refresh-btn"
+          onClick={() => loadOrders(true)}
+          disabled={loading || refreshing}
+        >
+          {refreshing ? 'Обновление...' : 'Обновить'}
+        </button>
+      </div>
 
       {loading && <p className="state">Загрузка данных...</p>}
       {error && !loading && <p className="state error">{error}</p>}
@@ -117,6 +155,30 @@ function App() {
                   <Bar dataKey="count" fill="#6c63ff" radius={[8, 8, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
+            </div>
+          </section>
+
+          <section className="table-card">
+            <h2>Список заказов</h2>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Имя клиента</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tableRows.map((row) => (
+                    <tr key={String(row.id)}>
+                      <td>{row.id}</td>
+                      <td>{row.customerName}</td>
+                      <td>{formatMoney(row.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </section>
         </>
