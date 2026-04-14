@@ -1,9 +1,9 @@
 Мини-дашборд для синхронизации заказов из RetailCRM в Supabase с аналитикой и уведомлениями в Telegram.
 
 Ссылки
-Dashboard (Vercel): [твоя ссылка на версель]
+Dashboard (Vercel): [ссылка на версель](https://ai-tools-specialist-six.vercel.app)
 
-GitHub Repo: [ссылка на этот репо]
+GitHub Repo: [ссылка на этот репо](https://github.com/HullyMully/ai-tools-specialist)
 
 Стек технологий
 Backend: Python (Requests, Supabase SDK)
